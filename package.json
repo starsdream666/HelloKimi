@@ -1,0 +1,38 @@
+{
+  "name": "kimi-ai-2api-cfworker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "将 kimi-ai.chat 转换为 OpenAI 兼容 API 的 Cloudflare Workers 网关（支持 stateful 会话与工具调用）",
+  "keywords": [
+    "kimi",
+    "openai",
+    "cloudflare-workers",
+    "api-gateway",
+    "function-calling",
+    "sse",
+    "hono",
+    "llm-proxy"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run --outdir=.wrangler/tmp",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit",
+    "kv:create": "wrangler kv namespace create KIMI_KV",
+    "secret:set": "wrangler secret put API_MASTER_KEY"
+  },
+  "dependencies": {
+    "hono": "^4.6.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240925.0",
+    "typescript": "^5.6.2",
+    "wrangler": "^3.78.0"
+  }
+}

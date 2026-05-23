@@ -1,0 +1,36 @@
+#
+# Cloudflare Workers 配置：kimi-ai-2api（CF 版）
+#
+# 首次部署三步：
+#   1. 安装 wrangler：       npm install
+#   2. 登录 Cloudflare：    npx wrangler login
+#   3. 创建 KV 命名空间： npx wrangler kv namespace create KIMI_KV
+#      拷贝返回的 id，填入下方 [[kv_namespaces]] 的 id 字段。
+#   4. 设置 API Key：     echo "<your-key>" | npx wrangler secret put API_MASTER_KEY
+#   5. 部署：              npm run deploy
+#
+name = "kimi-ai-2api"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ---- 公开变量（可被代码读取） ----
+# 注意：API_MASTER_KEY 必须通过 wrangler secret 注入，不要写在这里：
+#   echo "<your-key>" | npx wrangler secret put API_MASTER_KEY
+[vars]
+SESSION_CACHE_TTL  = "3600"               # stateful 会话上下文 TTL（秒）
+CONTEXT_MAX_LENGTH = "1000"               # 上游单次输入字符数硬上限
+DEFAULT_MODEL      = "kimi-k2-instruct-0905"
+STREAM_INTERVAL_MS = "20"                 # 伪流式逐字符间隔；0 = 一次性输出（Free Plan 推荐）
+
+# ---- KV 绑定：会话上下文与 nonce 缓存 ----
+# 请先运行： npx wrangler kv namespace create KIMI_KV
+# 然后将返回的 id 填入下方（请勿留空以避免部署失败）。
+[[kv_namespaces]]
+binding = "KIMI_KV"
+id      = "YOUR_KV_NAMESPACE_ID"          # ← 请替换为你自己的 KV id
+
+# ---- 可选：绑定自有域名（取消注释并修改）----
+# [[routes]]
+# pattern   = "kimi.example.com/*"
+# zone_name = "example.com"
