@@ -1,8 +1,7 @@
-# kimi-ai-2api · Cloudflare Workers Edition
+# HelloKimi-Kimi2API
 
 > 🚀 **零成本、零运维、全球边缘部署** —— 把 [kimi-ai.chat](https://kimi-ai.chat) 转换为 OpenAI 兼容 API 的高性能 Cloudflare Workers 网关。
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YOUR_USER/YOUR_REPO)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![Hono](https://img.shields.io/badge/Hono-4.6-E36002?logo=hono&logoColor=white)](https://hono.dev/)
@@ -10,7 +9,7 @@
 
 ---
 
-## ✨ 一图读懂
+## 技术架构
 
 ```
 ┌─────────────┐    OpenAI Protocol    ┌──────────────────────┐    HTTP    ┌──────────────┐
@@ -25,7 +24,7 @@
 
 ---
 
-## 📑 目录
+## 目录
 
 - [核心特性](#-核心特性)
 - [⚡ 5 分钟部署](#-5-分钟部署)
@@ -58,7 +57,7 @@
 
 ---
 
-## ⚡ 5 分钟部署
+## 部署
 
 ### 前置要求
 
@@ -445,16 +444,6 @@ action=kimi_send_message&nonce=<dynamic>&message=<text>&model=<id>&session_id=<i
 var kimi_ajax = {"ajax_url":"...","nonce":"<32-hex>"};
 ```
 
-### 关键技术映射（Python 版 → CF Worker）
-
-| Python 版组件 | CF Worker 实现 | 优势 |
-|---|---|---|
-| `cloudscraper` 绕过 CF 防护 | Worker 出口走 CF 内网 | 无需 JS challenge，零延迟 |
-| `cachetools.TTLCache` | KV `expirationTtl` | 持久化、跨 isolate 共享、零运维 |
-| `asyncio.Lock` 防并发抓 nonce | 双层缓存幂等（isolate mem + KV） | 无需锁，单调递增最终一致 |
-| FastAPI | Hono | API 风格几乎一致，体积更小 |
-| `StreamingResponse` | `ReadableStream` + `TransformStream` | 原生 Web Streams API |
-| 全局 Loguru | `console.*` + `wrangler tail` | 实时 tail 日志 |
 
 ### 工具调用模拟原理
 
@@ -474,7 +463,7 @@ var kimi_ajax = {"ajax_url":"...","nonce":"<32-hex>"};
 
 ---
 
-## 📂 项目结构
+## 项目结构
 
 ```
 cfworker/
@@ -495,22 +484,7 @@ cfworker/
 └── README.md
 ```
 
-### 一键命令清单
-
-| 命令 | 说明 |
-|---|---|
-| `npm install` | 安装依赖 |
-| `npm run dev` | 本地起 Miniflare 开发服务器（http://localhost:8787） |
-| `npm run typecheck` | TypeScript 类型检查（不打包） |
-| `npm run deploy:dry` | 仅打包不部署，验证构建 |
-| `npm run deploy` | 部署到 Cloudflare 边缘网络 |
-| `npm run tail` | 实时查看 Worker 日志 |
-| `npm run kv:create` | 创建 KV 命名空间（首次） |
-| `npm run secret:set` | 交互式设置 `API_MASTER_KEY` |
-
----
-
-## 📜 License
+## License
 
 [MIT](./LICENSE) © 2025 kimi-ai-2api contributors
 
@@ -518,7 +492,7 @@ cfworker/
 
 ---
 
-## 🌟 致谢
+## 致谢
 
 - 上游服务：[kimi-ai.chat](https://kimi-ai.chat)
 - 框架：[Hono](https://hono.dev/) · [Cloudflare Workers](https://workers.cloudflare.com/)
