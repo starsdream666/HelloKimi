@@ -67,8 +67,7 @@
 ### 步骤 1：克隆并安装
 
 ```bash
-git clone https://github.com/YOUR_USER/YOUR_REPO.git
-cd YOUR_REPO/cfworker     # 如直接放在仓库根则忽略 cfworker
+cd YOUR_REPO/cfworker     
 npm install
 ```
 
@@ -496,6 +495,5 @@ cfworker/
 
 - 上游服务：[kimi-ai.chat](https://kimi-ai.chat)
 - 框架：[Hono](https://hono.dev/) · [Cloudflare Workers](https://workers.cloudflare.com/)
-- 灵感来源：本项目的 [Python 版本](../) 完整业务逻辑
-
+- 学AI,上L站！ [LINUX DO](https://linux.do/)
 如本项目对你有帮助，欢迎 ⭐ Star。
