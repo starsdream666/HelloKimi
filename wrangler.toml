@@ -9,7 +9,7 @@
 #   4. 设置 API Key：     echo "<your-key>" | npx wrangler secret put API_MASTER_KEY
 #   5. 部署：              npm run deploy
 #
-name = "kimi-ai-2api"
+name = "hellokimi"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
