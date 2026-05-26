@@ -26,7 +26,9 @@ export const UPSTREAM_URL = "https://kimi-ai.chat/wp-admin/admin-ajax.php";
 export const CHAT_PAGE_URL = "https://kimi-ai.chat/chat/";
 
 /** 上游 ajax 请求超时（毫秒） */
-export const API_REQUEST_TIMEOUT_MS = 180_000;
+// 单次上游调用超时；触发后由 callUpstream 自动指数退避重试（最多 3 次）。
+// 设为 45s 既容忍上游慢响应，又能在 wall-clock(60s) 内留出 1~2 次重试时间窗口。
+export const API_REQUEST_TIMEOUT_MS = 45_000;
 
 /** 模型名映射：客户端可见名 → 上游真实模型名 */
 export const MODEL_MAP: Record<string, string> = {

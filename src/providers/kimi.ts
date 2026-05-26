@@ -51,11 +51,20 @@ const BROWSER_HEADERS: Record<string, string> = {
 };
 
 // ────────────────────────────────────────────────────────────
-// Nonce 管理：内存缓存 + KV 持久化
+// Nonce 管理：内存缓存 + KV 持久化 + 主动过期 + 失败自愈
 // ────────────────────────────────────────────────────────────
-const NONCE_KV_KEY = "kimi:nonce";
-const NONCE_KV_TTL_S = 60 * 60 * 24; // 24h
-let memNonce: string | null = null;
+const NONCE_KV_KEY = "kimi:nonce_v2";
+const NONCE_KV_TTL_S = 60 * 60 * 24; // 24h KV 兜底寿命
+const NONCE_MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6h 主动刷新阈值
+const NONCE_FAILURE_THRESHOLD = 3; // 连续失败 N 次自动失效
+
+interface NonceCache {
+  value: string;
+  createdAt: number; // ms 时间戳
+  failureCount: number; // 自创建以来的连续失败计数
+}
+
+let memNonce: NonceCache | null = null;
 
 async function fetchNonce(): Promise<string> {
   const ctrl = new AbortController();
@@ -78,19 +87,71 @@ async function fetchNonce(): Promise<string> {
   }
 }
 
+/** 读取当前 nonce 缓存（内存优先 → KV）。 */
+async function readNonceCache(env: Env): Promise<NonceCache | null> {
+  if (memNonce) return memNonce;
+  const raw = await env.KIMI_KV.get(NONCE_KV_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as NonceCache;
+    memNonce = parsed;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** 持久化 nonce 缓存（内存 + KV）。 */
+async function writeNonceCache(env: Env, cache: NonceCache): Promise<void> {
+  memNonce = cache;
+  await env.KIMI_KV.put(NONCE_KV_KEY, JSON.stringify(cache), {
+    expirationTtl: NONCE_KV_TTL_S,
+  });
+}
+
+/**
+ * 获取可用 nonce。三层失效条件触发重抓：
+ *   - forceRefresh = true
+ *   - 缓存年龄 > NONCE_MAX_AGE_MS（主动过期）
+ *   - 累计失败 ≥ NONCE_FAILURE_THRESHOLD（健康度降级）
+ */
 async function getNonce(env: Env, forceRefresh = false): Promise<string> {
-  if (!forceRefresh && memNonce) return memNonce;
+  const now = Date.now();
   if (!forceRefresh) {
-    const cached = await env.KIMI_KV.get(NONCE_KV_KEY);
-    if (cached) {
-      memNonce = cached;
-      return cached;
+    const cache = await readNonceCache(env);
+    if (cache) {
+      const stale = now - cache.createdAt > NONCE_MAX_AGE_MS;
+      const broken = cache.failureCount >= NONCE_FAILURE_THRESHOLD;
+      if (!stale && !broken) return cache.value;
     }
   }
   const fresh = await fetchNonce();
-  memNonce = fresh;
-  await env.KIMI_KV.put(NONCE_KV_KEY, fresh, { expirationTtl: NONCE_KV_TTL_S });
+  await writeNonceCache(env, { value: fresh, createdAt: now, failureCount: 0 });
   return fresh;
+}
+
+/** 上游报告 nonce 相关失败：累加计数，触达阈值后下次 getNonce 会自动重抓。 */
+async function reportNonceFailure(env: Env): Promise<void> {
+  const cache = await readNonceCache(env);
+  if (!cache) return;
+  cache.failureCount += 1;
+  // 仅当跨越阈值（如 1→3）时持久化，避免每次失败都写 KV
+  if (
+    cache.failureCount === NONCE_FAILURE_THRESHOLD ||
+    cache.failureCount === 1
+  ) {
+    await writeNonceCache(env, cache);
+  } else {
+    memNonce = cache; // 中间态仅保留在内存
+  }
+}
+
+/** 上游成功后清零失败计数（仅在非零时落盘，节省 KV 写入）。 */
+async function reportNonceSuccess(env: Env): Promise<void> {
+  const cache = await readNonceCache(env);
+  if (!cache || cache.failureCount === 0) return;
+  cache.failureCount = 0;
+  await writeNonceCache(env, cache);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -176,7 +237,8 @@ async function callUpstream(
   model: string,
   sessionId: string,
 ): Promise<string> {
-  const send = async (n: string) => {
+  /** 单次上游调用。对 5xx / 超时抛出可重试错误。 */
+  const sendOnce = async (n: string) => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), API_REQUEST_TIMEOUT_MS);
     try {
@@ -198,17 +260,64 @@ async function callUpstream(
     }
   };
 
+  /** 判断错误是否可重试（上游 5xx / 网络超时）。 */
+  const isRetryable = (e: unknown): boolean => {
+    if (e instanceof HttpError && e.status >= 500) return true;
+    const name = (e as Error)?.name;
+    if (name === "AbortError" || name === "TimeoutError") return true;
+    const msg = String((e as Error)?.message ?? e);
+    return /network|timeout|fetch failed|ECONN|abort/i.test(msg);
+  };
+
+  /** 指数退避重试：对 5xx / 网络错误最多重试 maxAttempts 次。 */
+  const sendWithRetry = async (n: string, maxAttempts = 3) => {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await sendOnce(n);
+      } catch (e) {
+        lastErr = e;
+        if (!isRetryable(e)) throw e;
+        if (attempt < maxAttempts - 1) {
+          // 600ms / 1.5s / 3s 退避，带随机抖动避免雪崩
+          const delay = 600 * Math.pow(2.2, attempt) + Math.random() * 200;
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new HttpError(502, "上游持续失败");
+  };
+
   let nonce = await getNonce(env);
-  let json = await send(nonce);
-  if (!json.success) {
-    // nonce 可能失效 → 强制刷新重试一次
+  let json: { success: boolean; data: unknown };
+
+  try {
+    json = await sendWithRetry(nonce);
+  } catch (e) {
+    // 最后一拍：可能是 nonce 失效叠加 5xx → 计入失败 + 刷新后再试一轮
+    if (!isRetryable(e)) throw e;
+    await reportNonceFailure(env);
     nonce = await getNonce(env, true);
-    json = await send(nonce);
+    json = await sendWithRetry(nonce, 2);
+  }
+
+  if (!json.success) {
+    // success=false → nonce 失效，计入失败 + 刷新后重试
+    await reportNonceFailure(env);
+    nonce = await getNonce(env, true);
+    try {
+      json = await sendWithRetry(nonce, 2);
+    } catch (e) {
+      throw e instanceof HttpError ? e : new HttpError(502, `上游请求失败: ${(e as Error).message}`);
+    }
     if (!json.success) {
       const detail = typeof json.data === "string" ? json.data : JSON.stringify(json.data);
       throw new HttpError(502, `上游请求失败: ${detail}`);
     }
   }
+
+  // 走到这里 = 至少有一次成功 → 清零失败计数
+  await reportNonceSuccess(env);
 
   const data = json.data as { message?: string } | string | null;
   if (data && typeof data === "object" && "message" in data) {
@@ -301,6 +410,95 @@ export function listModels(): Response {
     })),
   };
   return Response.json(data);
+}
+
+// ────────────────────────────────────────────────────────────
+// 公开 API：运维 / 健康检查
+// ────────────────────────────────────────────────────────────
+
+/**
+ * 强制刷新 nonce。返回新 nonce 的截断预览（仅供运维端确认）。
+ * 触发时机：管理端点 `POST /v1/admin/refresh-nonce`。
+ */
+export async function forceRefreshNonce(env: Env): Promise<{
+  nonce_preview: string;
+  refreshed_at: string;
+}> {
+  const fresh = await getNonce(env, true);
+  return {
+    nonce_preview: fresh.length > 8 ? `${fresh.slice(0, 4)}***${fresh.slice(-2)}` : "***",
+    refreshed_at: new Date().toISOString(),
+  };
+}
+
+/**
+ * 重置指定用户的 stateful session（删除 KV，下次对话自动新建）。
+ * 触发时机：管理端点 `POST /v1/admin/reset-session`。
+ */
+export async function resetSession(env: Env, userKey: string): Promise<{ deleted: boolean }> {
+  const k = sessionKey(userKey);
+  const existed = await env.KIMI_KV.get(k);
+  if (!existed) return { deleted: false };
+  await env.KIMI_KV.delete(k);
+  return { deleted: true };
+}
+
+/**
+ * 健康检查：探测 KV 可写、读取 nonce 缓存状态、报告版本与时间。
+ * 触发时机：公开端点 `GET /v1/health`（无需鉴权，便于监控接入）。
+ */
+export interface HealthReport {
+  status: "ok" | "degraded";
+  version: string;
+  time: string;
+  kv: { ok: boolean; error?: string };
+  nonce: {
+    cached: boolean;
+    age_seconds: number | null;
+    failure_count: number;
+    stale: boolean;
+  };
+}
+
+export async function healthCheck(env: Env): Promise<HealthReport> {
+  const result: HealthReport = {
+    status: "ok",
+    version: "1.0.0",
+    time: new Date().toISOString(),
+    kv: { ok: false },
+    nonce: { cached: false, age_seconds: null, failure_count: 0, stale: false },
+  };
+
+  // 1. 探测 KV 可读写
+  try {
+    const probe = `health:${Date.now()}`;
+    await env.KIMI_KV.put(probe, "1", { expirationTtl: 60 });
+    await env.KIMI_KV.delete(probe);
+    result.kv.ok = true;
+  } catch (e) {
+    result.kv.ok = false;
+    result.kv.error = (e as Error).message;
+    result.status = "degraded";
+  }
+
+  // 2. 报告 nonce 缓存状态
+  try {
+    const cache = await readNonceCache(env);
+    if (cache) {
+      const ageMs = Date.now() - cache.createdAt;
+      result.nonce = {
+        cached: true,
+        age_seconds: Math.floor(ageMs / 1000),
+        failure_count: cache.failureCount,
+        stale: ageMs > NONCE_MAX_AGE_MS || cache.failureCount >= NONCE_FAILURE_THRESHOLD,
+      };
+      if (result.nonce.stale) result.status = "degraded";
+    }
+  } catch {
+    /* nonce 状态读取失败不致命 */
+  }
+
+  return result;
 }
 
 // ────────────────────────────────────────────────────────────
